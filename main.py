@@ -265,12 +265,14 @@ def download_chapters(scraper, novel_id, novel_info, chapters, chapter_input):
     
     # Use Rich progress bar if available
     if RICH_AVAILABLE:
+        # Create a single console instance for the entire function
         console = Console()
         
         # Track time for ETA calculation
         start_time = time.time()
         completed_chapters = 0
         avg_time_per_chapter = 0
+        chapter_times = []  # Store individual chapter times for analysis
         
         with Progress(
             TextColumn("[bold blue]{task.description}"),
@@ -282,7 +284,8 @@ def download_chapters(scraper, novel_id, novel_info, chapters, chapter_input):
             download_task = progress.add_task(
                 "[green]Downloading chapters", 
                 total=len(chapters_to_process),
-                eta="Calculating..."
+                eta="Calculating...",
+                start_time=time.time()  # Store start time in task fields
             )
             
             for i, chapter in chapters_to_process:
@@ -304,17 +307,57 @@ def download_chapters(scraper, novel_id, novel_info, chapters, chapter_input):
                 chapter_copy['title'] = chapter_content['title']
                 chapters_to_download.append(chapter_copy)
                 
-                # Calculate average time per chapter for better ETA
+                # Calculate time taken for this chapter
                 chapter_time = time.time() - chapter_start_time
                 completed_chapters += 1
+                chapter_times.append(chapter_time)
                 
-                # Update running average
-                avg_time_per_chapter = ((avg_time_per_chapter * (completed_chapters - 1)) + chapter_time) / completed_chapters
+                # Update running average with more weight to recent chapters
+                if completed_chapters == 1:
+                    avg_time_per_chapter = chapter_time
+                else:
+                    # Use weighted average (70% previous average, 30% new data)
+                    avg_time_per_chapter = (avg_time_per_chapter * 0.7) + (chapter_time * 0.3)
+                    
+                    # If we have enough data, use median of last 5 chapters for more stability
+                    if len(chapter_times) >= 5:
+                        recent_times = sorted(chapter_times[-5:])
+                        median_time = recent_times[len(recent_times) // 2]
+                        # Blend median with weighted average for better stability
+                        avg_time_per_chapter = (avg_time_per_chapter * 0.6) + (median_time * 0.4)
                 
-                # Calculate ETA
+                # Calculate ETA based on refined average
                 chapters_remaining = len(chapters_to_process) - completed_chapters
                 eta_seconds = avg_time_per_chapter * chapters_remaining
-                eta_str = f"ETA: {int(eta_seconds // 60)}m {int(eta_seconds % 60)}s"
+                
+                # Calculate elapsed time
+                elapsed = time.time() - start_time
+                elapsed_hours, elapsed_remainder = divmod(elapsed, 3600)
+                elapsed_minutes, elapsed_seconds = divmod(elapsed_remainder, 60)
+                
+                # Format ETA in HH:MM:SS format for better readability
+                hours, remainder = divmod(eta_seconds, 3600)
+                minutes, seconds = divmod(remainder, 60)
+                
+                # Format strings based on duration
+                if hours > 0:
+                    eta_str = f"ETA: {int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
+                else:
+                    eta_str = f"ETA: {int(minutes):02d}:{int(seconds):02d}"
+                
+                # Add elapsed time
+                if elapsed_hours > 0:
+                    eta_str += f" | Elapsed: {int(elapsed_hours):02d}:{int(elapsed_minutes):02d}:{int(elapsed_seconds):02d}"
+                else:
+                    eta_str += f" | Elapsed: {int(elapsed_minutes):02d}:{int(elapsed_seconds):02d}"
+                
+                # Add average time per chapter to display
+                avg_time_min = int(avg_time_per_chapter // 60)
+                avg_time_sec = int(avg_time_per_chapter % 60)
+                if avg_time_min > 0:
+                    eta_str += f" | {avg_time_min}m {avg_time_sec}s/ch"
+                else:
+                    eta_str += f" | {avg_time_sec}s/ch"
                 
                 # Update progress with ETA
                 progress.update(download_task, advance=1, eta=eta_str)
@@ -450,29 +493,186 @@ def interactive_mode(config):
         print("\nFetching novel information...")
         novel_info = scraper.get_novel_info(novel_id)
         
-        print(f"\nNovel: {novel_info['title']}")
-        print(f"Author: {novel_info['author']}")
-        print(f"URL: {novel_info['url']}")
+        # Try to get terminal width, default to 100 if not available
+        try:
+            import shutil
+            terminal_width = shutil.get_terminal_size().columns
+            width = min(terminal_width, 100)  # Cap at 100 to avoid too wide displays
+        except:
+            width = 100
+            
+        border = "=" * width
+        separator = f"|{'-' * (width - 2)}|"
         
+        # Print novel info in a formatted box
+        print(f"\n{border}")
+        
+        # Center the title with padding - handle long titles with wrapping
+        title = novel_info['title']
+        if len(title) > width - 10:
+            # Split title into multiple lines
+            words = title.split()
+            title_lines = []
+            current_line = ""
+            
+            for word in words:
+                if len(current_line + " " + word) > width - 10:
+                    if current_line:
+                        title_lines.append(current_line)
+                    current_line = word
+                else:
+                    current_line = (current_line + " " + word).strip()
+            
+            if current_line:
+                title_lines.append(current_line)
+                
+            # Print each title line centered
+            for line in title_lines:
+                title_padding_left = (width - len(line) - 2) // 2
+                title_padding_right = width - len(line) - 2 - title_padding_left
+                print(f"|{' ' * title_padding_left}{line}{' ' * title_padding_right}|")
+        
+        # Author line
+        author = f"By : {novel_info['author']}"
+        author_padding_left = (width - len(author) - 2) // 2
+        author_padding_right = width - len(author) - 2 - author_padding_left
+        print(f"|{' ' * author_padding_left}{author}{' ' * author_padding_right}|")
+        
+        # Main separator
+        print(separator)
+        
+        # Fixed column width for labels
+        label_width = 15
+        content_width = width - label_width - 4  # 5 for "| " + " | " + "|"
+        
+        # URL with label in fixed column
+        url = novel_info['url']
+        print(f"| Url{' ' * (label_width - 4)}| {url}{' ' * max(0, content_width - len(url))}|")
+        
+        # Separator between sections
+        print(separator)
+        
+        # Metadata/Tags
         if novel_info['metadata']:
-            print("\nMetadata:")
+            tags = []
             for key, value in novel_info['metadata'].items():
-                print(f"- {key}: {value}")
+                if isinstance(value, list):
+                    tags.extend(value)
+                elif key.lower() in ('keywords', 'tags', 'genre'):
+                    tags.append(str(value))
+            
+            if tags:
+                tags_str = ", ".join(tags)
+                # Handle long tag lists with wrapping
+                if len(tags_str) > content_width:
+                    # Split tags into multiple lines
+                    current_line = ""
+                    tag_lines = []
+                    
+                    for tag in tags_str.split(", "):
+                        if len(current_line + ", " + tag) > content_width:
+                            tag_lines.append(current_line)
+                            current_line = tag
+                        else:
+                            if current_line:
+                                current_line += ", " + tag
+                            else:
+                                current_line = tag
+                    
+                    if current_line:
+                        tag_lines.append(current_line)
+                    
+                    # Print first line with label
+                    print(f"| Tags{' ' * (label_width - 5)}| {tag_lines[0]},{' ' * max(0, content_width - len(tag_lines[0]) - 1)}|")
+                    
+                    # Print remaining lines with proper alignment
+                    for line in tag_lines[1:]:
+                        print(f"| {' ' * (label_width - 1)}| {line}{' ' * max(0, content_width - (len(line) ))}|")
+                else:
+                    print(f"| Tags{' ' * (label_width - 5)}| {tags_str}{' ' * max(0, content_width - len(tags_str))}|")
+                
+                # Separator after tags
+                print(separator)
         
-        print("\nDescription:")
-        print(novel_info['description'])
+        # Description with word wrapping
+        desc_words = novel_info['description'].split()
+        desc_lines = []
+        current_line = ""
         
-        # Get chapter list
-        print("\nFetching chapter list...")
+        for word in desc_words:
+            if len(current_line + " " + word) > content_width:
+                desc_lines.append(current_line)
+                current_line = word
+            else:
+                current_line = (current_line + " " + word).strip()
+        
+        if current_line:
+            desc_lines.append(current_line)
+        
+        # Print description lines
+        if desc_lines:
+            # First line with label
+            print(f"| Description{' ' * (label_width - 12)}| {desc_lines[0]}{' ' * max(0, content_width - len(desc_lines[0]))}|")
+            
+            # Remaining lines with proper alignment
+            for line in desc_lines[1:]:
+                print(f"| {' ' * (label_width - 1)}| {line}{' ' * max(0, content_width - len(line))}|")
+            
+            # Separator after description
+            print(separator)
+        
+        # Get chapter list - don't print a separate message
         chapters = scraper.get_chapter_list(novel_id)
         
+        content_width = content_width
+
         if chapters:
-            print(f"\nFound {len(chapters)} chapters:")
-            for chapter in chapters[:5]:  # Show first 5 chapters
-                print(f"{chapter['index']}. {chapter['title']}")
+            # Chapter list with proper formatting
+            # print(f"| Chapter List{' ' * (label_width - 13)}| {' ' * (content_width)}|")
             
-            if len(chapters) > 5:
-                print(f"... and {len(chapters) - 5} more chapters")
+            # Show chapters in the box format
+            max_display = 10  # Show up to 10 chapters
+            first_chapter = True
+            for i, chapter in enumerate(chapters[:max_display]):
+                chapter_title = f"{chapter['index']}. {chapter['title']}"
+                
+                # Handle long chapter titles with wrapping
+                if len(chapter_title) > content_width:
+                    # Split chapter title into multiple lines
+                    words = chapter_title.split()
+                    ch_lines = []
+                    current_line = ""
+                    
+                    for word in words:
+                        if len(current_line + " " + word) > content_width:
+                            ch_lines.append(current_line)
+                            current_line = word
+                        else:
+                            current_line = (current_line + " " + word).strip()
+                    
+                    if current_line:
+                        ch_lines.append(current_line)
+                    
+                    # Print first line with proper padding
+                    # print(f"| {' ' * (label_width - 1)}| {ch_lines[0]}{' ' * max(0, content_width - len(ch_lines[0]))}|")
+                    print(f"| Chapter List{' ' * (label_width - 13)}| {ch_lines[0]}{' ' * max(0, content_width - len(ch_lines[0]))}|")
+
+                    # Print remaining lines if any with proper alignment
+                    for line in ch_lines[1:]:
+                        print(f"| {' ' * (label_width - 1)}| {line}{' ' * max(0, content_width - len(line))}|")
+                else:
+                    if first_chapter:
+                        print(f"| Chapter List{' ' * (label_width - 13)}| {chapter_title}{' ' * max(0, content_width - len(chapter_title))}|")
+                        first_chapter = False
+                    else:
+                        print(f"| {' ' * (label_width - 1)}| {chapter_title}{' ' * max(0, content_width - len(chapter_title))}|")
+            
+            if len(chapters) > max_display:
+                more_text = f"... and {len(chapters) - max_display} more chapters"
+                print(f"| {' ' * (label_width - 1)}| {more_text}{' ' * max(0, content_width - len(more_text))}|")
+            
+            # Close the box
+            print(border)
             
             # Ask if user wants to download chapters
             download_choice = input("\nDo you want to download chapters? (y/n): ").lower().strip()
@@ -582,12 +782,115 @@ def main():
             print(f"Fetching novel information for {args.novel_id}...")
             novel_info = scraper.get_novel_info(args.novel_id)
             
-            print(f"\nNovel: {novel_info['title']}")
-            print(f"Author: {novel_info['author']}")
+            # Try to get terminal width, default to 100 if not available
+            try:
+                import shutil
+                terminal_width = shutil.get_terminal_size().columns
+                width = min(terminal_width, 100)  # Cap at 100 to avoid too wide displays
+            except:
+                width = 100
+                
+            border = "=" * width
+            separator = f"|{'-' * (width - 2)}|"
+            label_width = 15
+            content_width = width - label_width - 5  # 5 for "| " + " | " + "|"
+            
+            # Print novel info in a formatted box
+            print(f"\n{border}")
+            
+            # Center the title with padding - handle long titles with wrapping
+            title = novel_info['title']
+            if len(title) > width - 10:
+                # Split title into multiple lines
+                words = title.split()
+                title_lines = []
+                current_line = ""
+                
+                for word in words:
+                    if len(current_line + " " + word) > width - 10:
+                        if current_line:
+                            title_lines.append(current_line)
+                        current_line = word
+                    else:
+                        current_line = (current_line + " " + word).strip()
+                
+                if current_line:
+                    title_lines.append(current_line)
+                    
+                # Print each title line centered
+                for line in title_lines:
+                    title_padding_left = (width - len(line) - 2) // 2
+                    title_padding_right = width - len(line) - 2 - title_padding_left
+                    print(f"|{' ' * title_padding_left}{line}{' ' * title_padding_right}|")
+            else:
+                # Single line title
+                title_padding_left = (width - len(title) - 2) // 2
+                title_padding_right = width - len(title) - 2 - title_padding_left
+                print(f"|{' ' * title_padding_left}{title}{' ' * title_padding_right}|")
+            
+            # Author line
+            author = f"By : {novel_info['author']}"
+            author_padding_left = (width - len(author) - 2) // 2
+            author_padding_right = width - len(author) - 2 - author_padding_left
+            print(f"|{' ' * author_padding_left}{author}{' ' * author_padding_right}|")
+            
+            # Main separator
+            print(separator)
+            
+            # URL with label in fixed column
+            url = novel_info['url']
+            print(f"| Url{' ' * (label_width - 3)}| {url}{' ' * max(0, content_width - len(url))}|")
             
             # Get chapter list
             chapters = scraper.get_chapter_list(args.novel_id)
-            print(f"Found {len(chapters)} chapters")
+            
+            # Chapter count with separator
+            print(separator)
+            chapter_count = f"{len(chapters)}"
+            print(f"| Chapters{' ' * (label_width - 8)}| {chapter_count}{' ' * max(0, content_width - len(chapter_count))}|")
+            
+            # Chapter list preview
+            if chapters:
+                print(separator)
+                print(f"| Chapter List{' ' * (label_width - 12)}| {' ' * (content_width - 1)}|")
+                
+                # Show a few chapters as preview
+                max_preview = 5
+                for i, chapter in enumerate(chapters[:max_preview]):
+                    chapter_title = f"{chapter['index']}. {chapter['title']}"
+                    
+                    # Handle long chapter titles with wrapping
+                    if len(chapter_title) > content_width:
+                        # Split chapter title into multiple lines
+                        words = chapter_title.split()
+                        ch_lines = []
+                        current_line = ""
+                        
+                        for word in words:
+                            if len(current_line + " " + word) > content_width:
+                                ch_lines.append(current_line)
+                                current_line = word
+                            else:
+                                current_line = (current_line + " " + word).strip()
+                        
+                        if current_line:
+                            ch_lines.append(current_line)
+                        
+                        # Print first line with proper padding
+                        print(f"| {' ' * (label_width - 1)}| {ch_lines[0]}{' ' * max(0, content_width - len(ch_lines[0]))}|")
+                        
+                        # Print remaining lines if any with proper alignment
+                        for line in ch_lines[1:]:
+                            print(f"| {' ' * (label_width - 1)}| {line}{' ' * max(0, content_width - len(line))}|")
+                    else:
+                        print(f"| {' ' * (label_width - 1)}| {chapter_title}{' ' * max(0, content_width - len(chapter_title))}|")
+                
+                if len(chapters) > max_preview:
+                    more_text = f"... and {len(chapters) - max_preview} more chapters"
+                    print(f"| {' ' * (label_width - 1)}| {more_text}{' ' * max(0, content_width - len(more_text))}|")
+            
+            # Close the box
+            print(border)
             
             # Download novel if requested
             if args.download:

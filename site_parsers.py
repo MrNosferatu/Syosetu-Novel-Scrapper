@@ -625,6 +625,8 @@ class HamelnParser(BaseSiteParser):
             to_translate.extend(tags)
             
             translated = self.batch_translate(to_translate)
+            print('To translate : ', to_translate)
+            print('Translated : ', translated)
             
             # Assign translated values
             title = translated[0]
